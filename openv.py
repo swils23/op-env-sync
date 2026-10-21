@@ -555,7 +555,12 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(path)
     cfg.account = args.account or cfg.account
     cfg.vault = args.vault or cfg.vault
-    return {"status": cmd_status, "push": cmd_push, "pull": cmd_pull}[args.command](cfg, args)
+    try:
+        return {"status": cmd_status, "push": cmd_push, "pull": cmd_pull}[args.command](cfg, args)
+    except BrokenPipeError:
+        # Output piped into something like `head` that stopped reading: exit quietly, as other CLIs do.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 1
 
 
 if __name__ == "__main__":
