@@ -1,0 +1,61 @@
+[project]
+name = "openv"
+dynamic = ["version"]
+description = "Sync .env files across machines through 1Password, with per-platform and per-host values"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = []
+keywords = ["1password", "dotenv", "env", "secrets", "op"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/swils23/openv"
+Repository = "https://github.com/swils23/openv"
+Issues = "https://github.com/swils23/openv/issues"
+
+[project.scripts]
+openv = "openv:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "openv.py"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["openv.py"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["openv.py", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "SIM", "UP", "I", "S"]
+# S603/S607: openv's job is running `op`; S101: pytest asserts.
+ignore = ["S603", "S607"]
+per-file-ignores = { "tests/*" = ["S101"] }

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# uv / packaging
+dist/
+build/
+*.egg-info/
+
+# Tools
+.pytest_cache/
+.ruff_cache/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Never commit real env files
+.env
+.env.*
+!.env.op.toml
