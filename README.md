@@ -32,6 +32,15 @@ uvx openv pull      # copy values down; on a fresh clone this writes .env from s
 
 Or install it so `openv` is on your PATH: `uv tool install openv`.
 
+To give a project a short command for it, add a [just](https://github.com/casey/just) recipe. Then `just env pull` works on a fresh clone:
+
+```just
+# Sync .env files through 1Password per .env.op.toml: just env [status|push|pull] [--yes]
+[positional-arguments]
+@env *args:
+    uvx openv "$@"
+```
+
 `push` and `pull` ask before they overwrite an existing value or create the 1Password item. Pass `--yes` to skip the question (required when nothing can answer it, as in scripts and agents). Values are never printed.
 
 ## `.env.op.toml`
