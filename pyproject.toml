@@ -1,5 +1,5 @@
 [project]
-name = "openv"
+name = "op-env-sync"
 dynamic = ["version"]
 description = "Sync .env files across machines through 1Password, with per-platform and per-host values"
 readme = "README.md"
@@ -23,12 +23,12 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/swils23/openv"
-Repository = "https://github.com/swils23/openv"
-Issues = "https://github.com/swils23/openv/issues"
+Homepage = "https://github.com/swils23/op-env-sync"
+Repository = "https://github.com/swils23/op-env-sync"
+Issues = "https://github.com/swils23/op-env-sync/issues"
 
 [project.scripts]
-openv = "openv:main"
+op-env-sync = "op_env_sync:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
@@ -38,13 +38,13 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "openv.py"
+path = "op_env_sync.py"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["openv.py"]
+only-include = ["op_env_sync.py"]
 
 [tool.hatch.build.targets.sdist]
-only-include = ["openv.py", "README.md", "LICENSE", "pyproject.toml"]
+only-include = ["op_env_sync.py", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -56,6 +56,6 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "SIM", "UP", "I", "S"]
-# S603/S607: openv's job is running `op`; S101: pytest asserts.
+# S603/S607: op-env-sync's job is running `op`; S101: pytest asserts.
 ignore = ["S603", "S607"]
 per-file-ignores = { "tests/*" = ["S101"] }

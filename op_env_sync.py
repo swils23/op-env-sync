@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""openv: sync a project's .env files with 1Password, so secrets travel between machines.
+"""op-env-sync: sync a project's .env files with 1Password, so secrets travel between machines.
 
 A tracked `.env.op.toml` next to the `.env` says which variables sync and how. It
 holds layout, never values, so it is safe to commit:
@@ -34,7 +34,7 @@ There is no merge base, so sync is explicit: `status` compares, `push` copies
 .env -> 1Password, `pull` copies 1Password -> .env. Overwriting an existing value,
 or creating the item, asks first. Values are never printed.
 
-Usage: openv [status|push|pull|init] [--yes] [--account ACCOUNT] [--vault VAULT]
+Usage: op-env-sync [status|push|pull|init] [--yes] [--account ACCOUNT] [--vault VAULT]
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ __version__ = "0.1.0"
 CONFIG_NAME = ".env.op.toml"
 ENV_NAME = ".env"
 SCOPES = ("shared", "platform", "host", "local")
-NOTE = "Managed by openv from {project}/.env.op.toml. Sections: shared, one per platform, one per host."
+NOTE = "Managed by op-env-sync from {project}/.env.op.toml. Sections: shared, one per platform, one per host."
 
 # 1Password CLI installed on the Windows side, reachable from WSL without being on PATH.
 WSL_OP_GLOB = "/mnt/c/Users/*/AppData/Local/Microsoft/WinGet/Packages/AgileBits.1Password.CLI_*/op.exe"
@@ -223,7 +223,7 @@ class EnvFile:
 
     def write(self, path: Path) -> None:
         mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".env.openv-")
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".env.op-env-sync-")
         try:
             with os.fdopen(fd, "w") as f:
                 f.write("\n".join(self.lines) + "\n")
@@ -363,7 +363,7 @@ def apply_to_item(cfg: Config, item: dict | None, updates: list[Var], values: di
     for var in updates:
         section = next((s for s in sections if s.get("label") == var.section), None)
         if section is None:
-            section = {"id": f"openv_{_slug(var.section)}", "label": var.section}
+            section = {"id": f"op_env_sync_{_slug(var.section)}", "label": var.section}
             sections.append(section)
         existing = next(
             (f for f in fields if f.get("label") == var.name and f.get("section", {}).get("label") == var.section),
@@ -500,7 +500,7 @@ def cmd_init(_cfg: None, args: argparse.Namespace) -> int:
     lines = [
         "# Which .env variables sync to 1Password, and how. Values never live here.",
         "# Scopes: shared (default), platform (per OS), host (per machine), local (never synced).",
-        "# Sync with `openv status|push|pull` (https://github.com/swils23/openv).",
+        "# Sync with `op-env-sync status|push|pull` (https://github.com/swils23/op-env-sync).",
         "",
         "[onepassword]",
         f'account = "{args.account}"'
@@ -521,7 +521,7 @@ def cmd_init(_cfg: None, args: argparse.Namespace) -> int:
 
 
 def die(msg: str) -> None:
-    print(f"openv: {msg}", file=sys.stderr)
+    print(f"op-env-sync: {msg}", file=sys.stderr)
     raise SystemExit(2)
 
 
@@ -536,7 +536,8 @@ def confirm(question: str, yes: bool) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="openv", description="Sync a project's .env files with 1Password, so secrets travel between machines."
+        prog="op-env-sync",
+        description="Sync a project's .env files with 1Password, so secrets travel between machines.",
     )
     parser.add_argument("command", nargs="?", default="status", choices=("status", "push", "pull", "init"))
     parser.add_argument("-y", "--yes", action="store_true", help="overwrite or create without asking")

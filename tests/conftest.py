@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import openv
+import op_env_sync
 
 FAKE_OP = Path(__file__).with_name("fake_op.py")
 
@@ -18,7 +18,7 @@ class FakeOp:
         return json.loads(path.read_text()) if path.exists() else None
 
     def values(self, title: str, **where: str) -> dict[tuple[str, str], str]:
-        return openv.remote_values(self.item(title, **where))
+        return op_env_sync.remote_values(self.item(title, **where))
 
     def calls(self) -> list[list[str]]:
         log = self.root / "calls.log"
@@ -45,8 +45,8 @@ def machine(monkeypatch):
     """Pretend to be a given platform/host: machine("macos", "mbp")."""
 
     def set_machine(platform: str = "wsl", host: str = "pc") -> None:
-        monkeypatch.setattr(openv, "platform_name", lambda: platform)
-        monkeypatch.setattr(openv, "host_name", lambda: host)
+        monkeypatch.setattr(op_env_sync, "platform_name", lambda: platform)
+        monkeypatch.setattr(op_env_sync, "host_name", lambda: host)
 
     set_machine()
     return set_machine
@@ -60,7 +60,7 @@ def project(tmp_path, monkeypatch):
         path = tmp_path / "machines" / name / "proj"
         path.mkdir(parents=True)
         if config is not None:
-            (path / openv.CONFIG_NAME).write_text(config)
+            (path / op_env_sync.CONFIG_NAME).write_text(config)
         for filename, text in (files or {}).items():
             (path / filename).write_text(text)
         monkeypatch.chdir(path)
@@ -75,7 +75,7 @@ def run(capsys):
 
     def run_cli(*argv: str) -> tuple[int, str, str]:
         try:
-            code = openv.main(list(argv))
+            code = op_env_sync.main(list(argv))
         except SystemExit as exc:
             code = exc.code
         out, err = capsys.readouterr()

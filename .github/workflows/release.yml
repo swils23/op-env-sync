@@ -1,10 +1,10 @@
-# Publishes openv to PyPI via trusted publishing (OIDC — no stored token).
+# Publishes op-env-sync to PyPI via trusted publishing (OIDC — no stored token).
 #
 # One-time setup on https://pypi.org/manage/account/publishing/ (and the same on
 # test.pypi.org): add a "pending publisher" for owner `swils23`, repository
-# `openv`, workflow `release.yml`, environment `pypi` (or `testpypi`).
+# `op-env-sync`, workflow `release.yml`, environment `pypi` (or `testpypi`).
 #
-# Release: bump __version__ in openv.py, commit, then
+# Release: bump __version__ in op_env_sync.py, commit, then
 #     git tag v0.1.0 && git push origin v0.1.0
 # Rehearse on TestPyPI first from the Actions tab (Run workflow → target: testpypi).
 name: Release
@@ -32,7 +32,7 @@ jobs:
       - name: Check the tag matches __version__
         if: github.ref_type == 'tag'
         run: |
-          version="$(sed -nE 's/^__version__ = "([^"]+)"/\1/p' openv.py)"
+          version="$(sed -nE 's/^__version__ = "([^"]+)"/\1/p' op_env_sync.py)"
           if [ "v$version" != "${GITHUB_REF_NAME}" ]; then
             echo "::error::tag ${GITHUB_REF_NAME} does not match __version__ = $version"
             exit 1
@@ -42,7 +42,7 @@ jobs:
       - run: uv run pytest
       - run: uv build
       - name: Smoke-test the wheel
-        run: uvx --from dist/*.whl openv --version
+        run: uvx --from dist/*.whl op-env-sync --version
       - uses: actions/upload-artifact@v7
         with:
           name: dist

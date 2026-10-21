@@ -21,7 +21,7 @@ wheels = [
 ]
 
 [[package]]
-name = "openv"
+name = "op-env-sync"
 source = { editable = "." }
 
 [package.dev-dependencies]

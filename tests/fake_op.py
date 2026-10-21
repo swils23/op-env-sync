@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A stand-in for the 1Password CLI, covering just what openv calls.
+"""A stand-in for the 1Password CLI, covering just what op-env-sync calls.
 
 Items live as JSON files under $FAKE_OP_DIR, one per (account, vault, title), so
 tests can check which account and vault a command touched. Every call is

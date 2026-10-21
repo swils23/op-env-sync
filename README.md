@@ -1,11 +1,11 @@
-# openv
+# op-env-sync
 
 Sync a project's `.env` files across machines through 1Password.
 
 A small tracked file, `.env.op.toml`, lists which variables travel and how. The values stay in your Git-ignored `.env` locally and in one 1Password item remotely. Values that differ per OS or per machine get their own slots in that item, so pushing from your Linux box never overwrites what your Mac uses.
 
 ```console
-$ openv
+$ op-env-sync
 local:     /home/sam/repos/swils  (platform=wsl, host=sffpc)
 1Password: my.1password.com (sam@example.com) / default vault / 'swils .env'
 
@@ -17,20 +17,20 @@ local:     /home/sam/repos/swils  (platform=wsl, host=sffpc)
 ## Requirements
 
 - [`uv`](https://github.com/astral-sh/uv), which provides `uvx` and fetches Python 3.11+ for you
-- The [1Password CLI](https://developer.1password.com/docs/cli/get-started/) (`op`), signed in. Turning on the desktop app integration is easiest. From WSL, openv also finds the Windows `op.exe` that WinGet installs.
+- The [1Password CLI](https://developer.1password.com/docs/cli/get-started/) (`op`), signed in. Turning on the desktop app integration is easiest. From WSL, op-env-sync also finds the Windows `op.exe` that WinGet installs.
 
-openv has no dependencies beyond the Python standard library.
+op-env-sync has no dependencies beyond the Python standard library.
 
 ## Run
 
 ```bash
-uvx openv init      # write a starter .env.op.toml from your current .env
-uvx openv           # status: compare local values with 1Password
-uvx openv push      # copy local values up
-uvx openv pull      # copy values down; on a fresh clone this writes .env from scratch
+uvx op-env-sync init      # write a starter .env.op.toml from your current .env
+uvx op-env-sync           # status: compare local values with 1Password
+uvx op-env-sync push      # copy local values up
+uvx op-env-sync pull      # copy values down; on a fresh clone this writes .env from scratch
 ```
 
-Or install it so `openv` is on your PATH: `uv tool install openv`.
+Or install it so `op-env-sync` is on your PATH: `uv tool install op-env-sync`.
 
 To give a project a short command for it, add a [just](https://github.com/casey/just) recipe. Then `just env pull` works on a fresh clone:
 
@@ -38,7 +38,7 @@ To give a project a short command for it, add a [just](https://github.com/casey/
 # Sync .env files through 1Password per .env.op.toml: just env [status|push|pull] [--yes]
 [positional-arguments]
 @env *args:
-    uvx openv "$@"
+    uvx op-env-sync "$@"
 ```
 
 `push` and `pull` ask before they overwrite an existing value or create the 1Password item. Pass `--yes` to skip the question (required when nothing can answer it, as in scripts and agents). Values are never printed.
@@ -59,7 +59,7 @@ DATABASE_URL = { scope = "local", default = "postgres://localhost/app" }  # neve
 TUNNEL_MODE = { scope = "platform", file = ".env.local-llm", help_text = "bridge on WSL, host on Mac" }
 ```
 
-Commit it. It holds layout only, never values. openv looks for it in the current directory and then each parent, so it works from anywhere inside the project.
+Commit it. It holds layout only, never values. op-env-sync looks for it in the current directory and then each parent, so it works from anywhere inside the project.
 
 | Key | Meaning |
 |---|---|
@@ -85,13 +85,13 @@ A machine only reads and writes `shared` plus its own platform and host sections
 
 ## Several 1Password accounts
 
-When more than one account is signed in, as on a work PC with personal and work accounts, choose one in the order openv checks:
+When more than one account is signed in, as on a work PC with personal and work accounts, choose one in the order op-env-sync checks:
 
 1. `--account` (and `--vault`) on the command line, for one run
 2. `account` / `vault` under `[onepassword]` in `.env.op.toml`, for everyone using the project
 3. `op`'s own `OP_ACCOUNT` environment variable, or its default account
 
-Use the account's sign-in address (`my.1password.com`, `acme.1password.com`) rather than a shorthand: the address names the same account on every machine and for every person. `op account list` shows it. `openv status` prints which account and vault it actually resolved to. Because a missing item is also what the wrong account looks like, `push` never creates the item without asking.
+Use the account's sign-in address (`my.1password.com`, `acme.1password.com`) rather than a shorthand: the address names the same account on every machine and for every person. `op account list` shows it. `op-env-sync status` prints which account and vault it actually resolved to. Because a missing item is also what the wrong account looks like, `push` never creates the item without asking.
 
 ## How syncing works
 
@@ -108,11 +108,11 @@ There is no merge base and no background sync. `status` shows what differs, and 
 uv sync
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
-./openv.py --help      # the single file also runs directly with uv
+./op_env_sync.py --help      # the single file also runs directly with uv
 ```
 
 The tests run against `tests/fake_op.py`, a stand-in for `op` that stores items as JSON per account and vault.
 
 ### Releasing
 
-Bump `__version__` in `openv.py`, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The Release workflow publishes to PyPI through trusted publishing and attaches the wheel to a GitHub release. You can rehearse a release on TestPyPI from the Actions tab.
+Bump `__version__` in `op_env_sync.py`, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The Release workflow publishes to PyPI through trusted publishing and attaches the wheel to a GitHub release. You can rehearse a release on TestPyPI from the Actions tab.

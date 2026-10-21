@@ -2,7 +2,7 @@ import stat
 
 import pytest
 
-import openv
+import op_env_sync
 
 CONFIG = """
 [onepassword]
@@ -240,22 +240,22 @@ def test_bad_scope(project, run):
 def test_decode(tmp_path, line, value):
     path = tmp_path / ".env"
     path.write_text(line + "\n")
-    assert openv.EnvFile.read(path).values == {"A": value}
+    assert op_env_sync.EnvFile.read(path).values == {"A": value}
 
 
 @pytest.mark.parametrize("value", ["plain", "", "a b", "it's", 'say "hi"', "multi\nline", "back\\slash", "$HOME"])
 def test_set_round_trips(tmp_path, value):
     path = tmp_path / ".env"
-    env = openv.EnvFile.read(path)
+    env = op_env_sync.EnvFile.read(path)
     env.set("A", value)
     env.write(path)
-    assert openv.EnvFile.read(path).values["A"] == value
+    assert op_env_sync.EnvFile.read(path).values["A"] == value
 
 
 def test_set_keeps_quote_style_and_comments(tmp_path):
     path = tmp_path / ".env"
     path.write_text('# head\nexport A="x" # keep\nB=1\nA=dup\n')
-    env = openv.EnvFile.read(path)
+    env = op_env_sync.EnvFile.read(path)
     assert env.values["A"] == "dup"  # last assignment wins, as in dotenv
     env.set("A", "y")
     env.set("B", "2")
@@ -267,7 +267,7 @@ def test_write_keeps_existing_permissions(tmp_path):
     path = tmp_path / ".env"
     path.write_text("A=1\n")
     path.chmod(0o640)
-    env = openv.EnvFile.read(path)
+    env = op_env_sync.EnvFile.read(path)
     env.set("A", "2")
     env.write(path)
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
