@@ -133,7 +133,7 @@ Values go straight from one API to the other. They are never written to disk or 
 
 **push** creates missing variables (Coolify's defaults: available at build time and runtime) and updates changed ones. An update keeps each variable's Coolify settings (literal, multiline, build-time, runtime) as they are. Changing an existing value asks first. Coolify applies new values on an app's next deploy; pass `--redeploy` to deploy the changed apps right away. `push` skips an app whose 1Password section is empty, so an app is never emptied by accident; run `coolify pull` first.
 
-**Deleting.** Neither direction deletes anything by default. `--prune` also removes keys the source side doesn't have: `pull --prune` deletes fields from 1Password, and `push --prune` deletes variables in Coolify. `--app NAME` limits any command to one app.
+**Deleting.** Neither direction deletes anything by default. `--prune` also removes keys the source side doesn't have: `pull --prune` deletes fields from 1Password, and `push --prune` deletes variables in Coolify. Coolify gives every new variable a preview-deployment copy (the same happens when you add one in its UI), so `push --prune` deletes a key's preview copy along with it. `--app NAME` limits any command to one app.
 
 ## Development
 

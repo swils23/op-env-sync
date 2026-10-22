@@ -327,3 +327,27 @@ def test_unreachable_server(fake_op, project, run, terminal):
     code, _, err = run("coolify")
     assert code == 2
     assert "Can't reach Coolify at http://127.0.0.1:9" in err
+
+
+def test_created_keys_get_a_preview_copy_that_prune_removes_too(ready, fake_op, run):
+    run("coolify", "pull", "--app", "worker")
+    import op_env_sync
+
+    cfg = op_env_sync.load_config(op_env_sync.find_config(op_env_sync.Path.cwd()))
+    op_env_sync.apply_to_item(cfg, op_env_sync.get_item(cfg), [("coolify-worker", "TEMP", "1")])
+    assert run("coolify", "push", "--app", "worker")[0] == 0
+    assert [e["is_preview"] for e in ready.apps[WORKER] if e["key"] == "TEMP"] == [False, True]
+
+    op_env_sync.apply_to_item(cfg, op_env_sync.get_item(cfg), [], [("coolify-worker", "TEMP")])
+    code, out, _ = run("coolify", "push", "--app", "worker", "--prune", "--yes")
+    assert code == 0
+    assert "- worker/TEMP (and its preview copy)" in out
+    assert not [e for e in ready.apps[WORKER] if e["key"] == "TEMP"]
+
+
+def test_preview_only_keys_are_never_touched(ready, fake_op, run):
+    ready.apps[WORKER].append(env("PREVIEW_ONLY", "x", is_preview=True))
+    run("coolify", "pull", "--app", "worker")
+    assert "PREVIEW_ONLY" not in section(fake_op, "coolify-worker")
+    assert run("coolify", "push", "--app", "worker", "--prune", "--yes")[0] == 0
+    assert any(e["key"] == "PREVIEW_ONLY" for e in ready.apps[WORKER])

@@ -1,7 +1,8 @@
 """A stand-in for the Coolify v4 API endpoints op-env-sync calls, run as a local HTTP server.
 
 It copies the real server's quirks that matter here (checked against Coolify 4.4.6's
-ApplicationsController): values are only returned to tokens with `read:sensitive`
+ApplicationsController and EnvironmentVariable model): a new app variable gets a
+preview-deployment copy, values are only returned to tokens with `read:sensitive`
 and never for "shown once" variables, and an update resets is_literal / is_multiline /
 is_shown_once when the request leaves them out.
 """
@@ -103,6 +104,9 @@ class FakeCoolify:
                     flags = {k: v for k, v in body.items() if k.startswith("is_")}
                     new = env(body["key"], body["value"], **flags)
                     envs.append(new)
+                    # Coolify's EnvironmentVariable::created hook: a new app variable gets a preview copy.
+                    if not new["is_preview"] and not any(e["key"] == new["key"] and e["is_preview"] for e in envs):
+                        envs.append(env(new["key"], new["value"], **{**flags, "is_preview": True}))
                     return self.reply(201, {"uuid": new["uuid"]})
                 if method == "PATCH":
                     e = next((e for e in envs if e["key"] == body["key"] and not e["is_preview"]), None)

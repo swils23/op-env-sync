@@ -630,12 +630,13 @@ class CoolifyClient:
             die(f"Can't reach Coolify at {self.url}: {exc.reason}")
         return json.loads(raw) if raw else None
 
-    def envs(self, app: CoolifyApp) -> list[dict]:
-        """The app's production env vars (preview-deployment ones are left alone)."""
-        envs = [e for e in self.request("GET", f"/applications/{app.uuid}/envs") if not e.get("is_preview")]
+    def envs(self, app: CoolifyApp) -> tuple[list[dict], dict[str, dict]]:
+        """The app's production env vars, plus its preview-deployment ones by key (synced never, pruned along)."""
+        everything = self.request("GET", f"/applications/{app.uuid}/envs")
+        envs = [e for e in everything if not e.get("is_preview")]
         if any("value" not in e for e in envs if not e.get("is_shown_once")):
             raise TokenRejected("This Coolify token can't read values (it lacks the read:sensitive ability).")
-        return envs
+        return envs, {e["key"]: e for e in everything if e.get("is_preview")}
 
     def create(self, app: CoolifyApp, key: str, value: str) -> None:
         self.request(
@@ -711,6 +712,7 @@ class AppState:
     live: dict[str, dict]  # key -> Coolify env (values readable)
     stored: dict[str, str]  # key -> value in the app's 1Password section
     hidden: list[str]  # "shown once" keys: Coolify never returns their values
+    previews: dict[str, dict] = field(default_factory=dict)  # key -> preview-deployment copy
 
 
 def app_states(cfg: Config, client: CoolifyClient, item: dict, only: str | None) -> list[AppState]:
@@ -720,13 +722,14 @@ def app_states(cfg: Config, client: CoolifyClient, item: dict, only: str | None)
     remote = remote_values(item)
     states = []
     for app in apps:
-        envs = client.envs(app)
+        envs, previews = client.envs(app)
         states.append(
             AppState(
                 app,
                 live={e["key"]: e for e in envs if not e.get("is_shown_once")},
                 stored={label: v for (sec, label), v in remote.items() if sec == app.section},
                 hidden=sorted(e["key"] for e in envs if e.get("is_shown_once")),
+                previews=previews,
             )
         )
     return states
@@ -824,7 +827,8 @@ def coolify_push(cfg: Config, args, client: CoolifyClient, _item, states: list[A
         return 0
     symbol = {"create": "+", "update": "~", "delete": "-"}
     for st, action, key in plan:
-        print(f"  {symbol[action]} {st.app.name}/{key}")
+        twin = " (and its preview copy)" if action == "delete" and key in st.previews else ""
+        print(f"  {symbol[action]} {st.app.name}/{key}{twin}")
     risky = sum(action != "create" for _, action, _ in plan)
     if risky and not confirm(f"Change {risky} existing value(s) in Coolify?", args.yes):
         return 1
@@ -835,6 +839,9 @@ def coolify_push(cfg: Config, args, client: CoolifyClient, _item, states: list[A
             client.update(st.app, st.live[key], st.stored[key])
         else:
             client.delete(st.app, st.live[key])
+            # Coolify gives every new app variable a preview copy; a pruned key shouldn't leave one behind.
+            if key in st.previews:
+                client.delete(st.app, st.previews[key])
     changed = list({id(st): st.app for st, _, _ in plan}.values())
     print(f"Pushed {len(plan)} change(s) to Coolify.")
     if args.redeploy:
