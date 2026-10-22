@@ -44,7 +44,8 @@ one section per app, straight between the two APIs (never via local files):
 
 `coolify pull` copies Coolify -> 1Password, `coolify push` copies 1Password ->
 Coolify. The API token is prompted for once and kept in the item's "coolify"
-section. Projects without a [coolify] table never touch Coolify.
+section, bound to the url it was stored for. Projects without a [coolify] table
+never touch Coolify.
 
 Usage: op-env-sync [status|push|pull|init] [--yes] [--account ACCOUNT] [--vault VAULT]
        op-env-sync coolify [status|pull|push|token] [--app NAME] [--prune] [--redeploy] [--yes]
@@ -56,6 +57,7 @@ import argparse
 import contextlib
 import getpass
 import glob
+import ipaddress
 import json
 import os
 import re
@@ -71,7 +73,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 CONFIG_NAME = ".env.op.toml"
 ENV_NAME = ".env"
@@ -81,6 +83,8 @@ NOTE = "Managed by op-env-sync from {project}/.env.op.toml. Sections: shared, on
 # Where the Coolify API token lives in the item. (Names, not secrets: hence the noqa.)
 TOKEN_SECTION = "coolify"  # noqa: S105
 TOKEN_FIELD = "api-token"  # noqa: S105
+URL_FIELD = "url"
+PLATFORMS = ("macos", "wsl", "linux", "windows")
 ABILITIES_HELP = (
     "Create one in Coolify under Keys & Tokens > API tokens with the read, write and read:sensitive"
     " abilities (plus deploy, for --redeploy)."
@@ -119,6 +123,8 @@ def section_for(scope: str) -> str:
 
 
 # --- .env.op.toml ---
+
+NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 
 
 @dataclass
@@ -193,7 +199,7 @@ def find_config(start: Path) -> Path | None:
 
 
 def load_config(path: Path) -> Config:
-    data = tomllib.loads(path.read_text())
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
     op = data.get("onepassword", {})
     cfg = Config(
         project=path.parent,
@@ -202,6 +208,10 @@ def load_config(path: Path) -> Config:
         item=op.get("item") or f"{path.parent.name} .env",
     )
     for name, spec in data.get("variables", {}).items():
+        if not re.fullmatch(NAME, name):
+            die(f"{path}: {name!r} isn't a valid variable name (letters, digits and _, not starting with a digit).")
+        if not isinstance(spec, dict):
+            die(f'{path}: {name} takes a table, like {name} = {{}} or {name} = {{ scope = "host" }}.')
         scope = spec.get("scope", "shared")
         if scope not in SCOPES:
             die(f"{path}: {name} has scope {scope!r}; expected one of {', '.join(SCOPES)}")
@@ -211,11 +221,19 @@ def load_config(path: Path) -> Config:
             scope,
             spec.get("help_text", ""),
             None if default is None else _toml_scalar(default),
-            spec.get("file", ENV_NAME),
+            _env_file(path, spec.get("file", ENV_NAME)),
         )
     if "coolify" in data:
         cfg.coolify = _load_coolify(path, data["coolify"])
     return cfg
+
+
+def _env_file(path: Path, file: str) -> str:
+    """The project-relative spelling of an env file, so `.env` and `./.env` are one file."""
+    norm = Path(os.path.normpath(file))
+    if norm.is_absolute() or norm.parts[:1] in ((), ("..",)):
+        die(f"{path}: file {file!r} must be inside the project.")
+    return norm.as_posix()
 
 
 def _load_coolify(path: Path, table: dict) -> Coolify:
@@ -227,9 +245,14 @@ def _load_coolify(path: Path, table: dict) -> Coolify:
             die(f"{path}: [coolify] takes `url` plus one [coolify.<app>] table per app; {name!r} is neither.")
         if not value.get("uuid"):
             die(f"{path}: [coolify.{name}] needs the app's `uuid` (the id in its Coolify URL).")
-        apps.append(CoolifyApp(name, value["uuid"], value.get("section") or f"coolify-{name}"))
+        section = value.get("section") or f"coolify-{name}"
+        if section in ("shared", "local", TOKEN_SECTION, *PLATFORMS) or section.startswith("host-"):
+            die(f"{path}: [coolify.{name}] section {section!r} is reserved for .env values or the token.")
+        apps.append(CoolifyApp(name, value["uuid"], section))
     if not table.get("url"):
         die(f"{path}: [coolify] needs `url`, the Coolify server's address.")
+    if urllib.parse.urlsplit(table["url"]).scheme not in ("http", "https"):
+        die(f"{path}: [coolify] url must be an http(s) address.")
     if not apps:
         die(f"{path}: [coolify] lists no apps. Add a [coolify.<app>] table with the app's `uuid`.")
     return Coolify(table["url"].rstrip("/"), apps)
@@ -244,48 +267,56 @@ def _toml_scalar(value: object) -> str:
 
 # --- .env parsing (line-preserving) ---
 
-ASSIGN_RE = re.compile(r"^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)")
+ASSIGN_RE = re.compile(rf"[ \t]*(?:export[ \t]+)?({NAME})[ \t]*=[ \t]*")
 BARE_SAFE_RE = re.compile(r"[A-Za-z0-9_./:@,+=%~-]*")
+# Escapes every dotenv reader agrees on inside double quotes; any other backslash is kept as written.
+ESCAPES = {"n": "\n", "t": "\t", "\\": "\\", '"': '"'}
 
 
 @dataclass
 class EnvFile:
-    """A .env kept as its lines, so updates touch only the value and keep comments/order."""
+    """A .env kept as its text, so updates touch only the value and keep comments/order."""
 
-    lines: list[str]
-    # name -> (line index, value start, value end) of the last assignment (dotenv: last wins)
-    spans: dict[str, tuple[int, int, int]] = field(default_factory=dict)
+    text: str = ""
+    # name -> (value start, value end) offsets of the last assignment (dotenv: last wins)
+    spans: dict[str, tuple[int, int]] = field(default_factory=dict)
     values: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self._parse()
+
+    def _parse(self) -> None:
+        self.spans, self.values, pos = {}, {}, 0
+        while pos < len(self.text):
+            if m := ASSIGN_RE.match(self.text, pos):
+                self.values[m.group(1)], pos = _decode(self.text, m.end())
+                self.spans[m.group(1)] = (m.end(), pos)
+            eol = self.text.find("\n", pos)
+            pos = len(self.text) if eol == -1 else eol + 1
 
     @classmethod
     def read(cls, path: Path) -> EnvFile:
-        env = cls(path.read_text().splitlines() if path.exists() else [])
-        for i, line in enumerate(env.lines):
-            m = ASSIGN_RE.match(line)
-            if m:
-                value, end = _decode(line, m.end())
-                env.spans[m.group(2)] = (i, m.end(), end)
-                env.values[m.group(2)] = value
-        return env
+        return cls(path.read_text(encoding="utf-8") if path.exists() else "")
 
     def set(self, name: str, value: str, help_text: str = "") -> None:
         if name in self.spans:
-            i, start, end = self.spans[name]
-            old = self.lines[i][start:end]
-            self.lines[i] = self.lines[i][:start] + _encode(value, old[:1]) + self.lines[i][end:]
+            start, end = self.spans[name]
+            text = self.text[:start] + _encode(value, self.text[start : start + 1]) + self.text[end:]
         else:
-            if help_text and self.lines and self.lines[-1].strip():
-                self.lines.append("")
-            self.lines.extend(f"# {ln}" for ln in help_text.splitlines())
-            self.lines.append(f"{name}={_encode(value, '')}")
-        self.values[name] = value
+            text = self.text if not self.text or self.text.endswith("\n") else self.text + "\n"
+            if help_text and text.strip() and not text.endswith("\n\n"):
+                text += "\n"
+            text += "".join(f"# {ln}\n" for ln in help_text.splitlines()) + f"{name}={_encode(value, '')}\n"
+        self.text = text
+        self._parse()
 
     def write(self, path: Path) -> None:
+        path = path.resolve()  # through a symlinked .env, not over the link
         mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".env.op-env-sync-")
         try:
-            with os.fdopen(fd, "w") as f:
-                f.write("\n".join(self.lines) + "\n")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(self.text)
             os.chmod(tmp, mode)
             os.replace(tmp, path)
         except BaseException:
@@ -293,30 +324,31 @@ class EnvFile:
             raise
 
 
-def _decode(line: str, start: int) -> tuple[str, int]:
-    """Return (value, end offset) for the value starting at `start`; the rest is comment/whitespace."""
-    quote = line[start : start + 1]
+def _decode(text: str, start: int) -> tuple[str, int]:
+    """Return (value, end offset) for the value starting at `start`; quoted values may span lines."""
+    quote = text[start : start + 1]
     if quote == "'":
-        end = line.find("'", start + 1)
+        end = text.find("'", start + 1)
         if end != -1:
-            return line[start + 1 : end], end + 1
+            return text[start + 1 : end], end + 1
     elif quote == '"':
         out, i = [], start + 1
-        while i < len(line):
-            c = line[i]
-            if c == "\\" and i + 1 < len(line):
-                out.append({"n": "\n", "t": "\t"}.get(line[i + 1], line[i + 1]))
+        while i < len(text):
+            c = text[i]
+            if c == "\\" and i + 1 < len(text):
+                out.append(ESCAPES.get(text[i + 1], text[i : i + 2]))
                 i += 2
             elif c == '"':
                 return "".join(out), i + 1
             else:
                 out.append(c)
                 i += 1
-    # Unquoted (or unterminated): runs to an inline " #" comment.
-    m = re.search(r"\s+#", line[start:])
-    end = start + m.start() if m else len(line.rstrip())
-    end = max(end, start)
-    return line[start:end].strip(), end
+    # Unquoted (or unterminated): runs to the end of the line or an inline " #" comment.
+    eol = text.find("\n", start)
+    line = text[start : len(text) if eol == -1 else eol]
+    m = re.search(r"\s+#", line)
+    raw = line[: m.start()] if m else line.rstrip()
+    return raw.strip(), start + len(raw)
 
 
 def _encode(value: str, prefer_quote: str) -> str:
@@ -376,14 +408,15 @@ def get_item(cfg: Config) -> dict | None:
     op_failed(f"Couldn't read 1Password item {cfg.item!r}", proc.stderr)
 
 
-def describe_target(cfg: Config) -> str:
-    """Where the item lives, naming the account op actually resolved to (best effort)."""
+def describe_target(cfg: Config, item: dict | None = None) -> str:
+    """Where the item lives, naming the account and vault op actually resolved to (best effort)."""
     proc = run_op(cfg, "whoami", "--format", "json")
     account = cfg.account or "default account"
     if proc.returncode == 0:
         me = json.loads(proc.stdout)
         account = f"{me.get('url', account)} ({me.get('email', '?')})"
-    return f"{account} / {cfg.vault or 'default vault'} / {cfg.item!r}"
+    vault = (item or {}).get("vault", {}).get("name") or cfg.vault or "default vault"
+    return f"{account} / {vault} / {cfg.item!r}"
 
 
 def remote_values(item: dict | None) -> dict[tuple[str, str], str]:
@@ -399,6 +432,16 @@ def remote_values(item: dict | None) -> dict[tuple[str, str], str]:
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+
+def _unique_id(base: str, taken: set[str]) -> str:
+    """`base`, or `base_2`, `base_3`... when another field or section already has it."""
+    candidate, n = base, 1
+    while candidate in taken:
+        n += 1
+        candidate = f"{base}_{n}"
+    taken.add(candidate)
+    return candidate
 
 
 def apply_to_item(
@@ -427,10 +470,11 @@ def apply_to_item(
     gone = set(deletes)
     fields = [f for f in item.get("fields", []) if (f.get("section", {}).get("label"), f.get("label")) not in gone]
     item["fields"] = fields
+    ids = {x.get("id") for x in [*sections, *fields]}
     for section_label, label, value in sets:
         section = next((s for s in sections if s.get("label") == section_label), None)
         if section is None:
-            section = {"id": f"op_env_sync_{_slug(section_label)}", "label": section_label}
+            section = {"id": _unique_id(f"op_env_sync_{_slug(section_label)}", ids), "label": section_label}
             sections.append(section)
         existing = next(
             (f for f in fields if f.get("label") == label and f.get("section", {}).get("label") == section_label),
@@ -441,7 +485,7 @@ def apply_to_item(
         else:
             fields.append(
                 {
-                    "id": f"{section['id']}_{_slug(label)}",
+                    "id": _unique_id(f"{section['id']}_{_slug(label)}", ids),
                     "type": "CONCEALED",
                     "label": label,
                     "value": value,
@@ -465,7 +509,7 @@ def cmd_status(cfg: Config, _args: argparse.Namespace) -> int:
     item = get_item(cfg)
     remote = remote_values(item)
     print(f"local:     {cfg.project}  (platform={platform_name()}, host={host_name()})")
-    print(f"1Password: {describe_target(cfg)}" + ("" if item else "  (item not created yet)") + "\n")
+    print(f"1Password: {describe_target(cfg, item)}" + ("" if item else "  (item not created yet)") + "\n")
 
     width = max((len(n) for n in cfg.variables), default=0)
     for var in cfg.variables.values():
@@ -515,6 +559,8 @@ def cmd_push(cfg: Config, args: argparse.Namespace) -> int:
     if not updates:
         print("1Password is up to date.")
         return 0
+    if item is not None:
+        print(f"1Password: {describe_target(cfg, item)}")
     for var in updates:
         print(f"  {'~' if var in overwrites else '+'} {var.section}/{var.name}")
     if item is None:
@@ -547,7 +593,13 @@ def cmd_pull(cfg: Config, args: argparse.Namespace) -> int:
     if not changes:
         print("Env files are up to date.")
         return 0
+    root = cfg.project.resolve()
+    targets = {name: (cfg.project / name).resolve() for name in dict.fromkeys(v.file for v, _, _ in changes)}
+    for name, target in targets.items():
+        if not target.is_relative_to(root):
+            die(f"{cfg.project / name} links to {target}, outside the project; not writing it.")
     overwrites = [v for v, _, _ in changes if local.get(v) is not None]
+    print(f"1Password: {describe_target(cfg, item)}")
     for var, _, source in changes:
         file = "" if var.file == ENV_NAME else f"  [{var.file}]"
         print(f"  {'~' if var in overwrites else '+'} {var.name}  ({source}){file}")
@@ -555,8 +607,8 @@ def cmd_pull(cfg: Config, args: argparse.Namespace) -> int:
         return 1
     for var, value, _ in changes:
         local.files[var.file].set(var.name, value, var.help_text)
-    for name in dict.fromkeys(v.file for v, _, _ in changes):
-        local.files[name].write(cfg.project / name)
+    for name, target in targets.items():
+        local.files[name].write(target)
         print(f"Wrote {cfg.project / name}")
     return 0
 
@@ -572,16 +624,16 @@ def cmd_init(_cfg: None, args: argparse.Namespace) -> int:
         "# Sync with `op-env-sync status|push|pull` (https://github.com/swils23/op-env-sync).",
         "",
         "[onepassword]",
-        f'account = "{args.account}"'
+        f"account = {json.dumps(args.account)}"
         if args.account
         else '# account = "my.1password.com"  # pin it when several accounts are signed in',
-        f'vault = "{args.vault}"' if args.vault else '# vault = "Private"',
-        f'item = "{Path.cwd().name} .env"',
+        f"vault = {json.dumps(args.vault)}" if args.vault else '# vault = "Private"',
+        f"item = {json.dumps(f'{Path.cwd().name} .env')}",
         "",
         "[variables]",
         *(f"{name} = {{}}" for name in local.values),
     ]
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"Wrote {path} with {len(local.values)} variable(s), all shared. Mark per-machine ones, then push.")
     return 0
 
@@ -591,6 +643,14 @@ def cmd_init(_cfg: None, args: argparse.Namespace) -> int:
 
 class TokenRejected(Exception):
     """Coolify answered 401, or the token can't see values."""
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args) -> None:
+        return None  # never carry the token to another address; request() reports the 3xx
+
+
+OPENER = urllib.request.build_opener(NoRedirects)
 
 
 class CoolifyClient:
@@ -614,11 +674,16 @@ class CoolifyClient:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+            with OPENER.open(req, timeout=30) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
             with exc:  # an unclosed error response leaks its socket
                 detail = exc.read().decode(errors="replace")
+            if 300 <= exc.code < 400:
+                die(
+                    f"Coolify redirected {method} {path} to {exc.headers.get('Location')}."
+                    " Set [coolify] url to that address."
+                )
             if exc.code == 401:
                 raise TokenRejected("Coolify rejected the API token.") from None
             with contextlib.suppress(ValueError, AttributeError):
@@ -628,7 +693,10 @@ class CoolifyClient:
             die(f"Coolify {method} {path} failed ({exc.code}): {detail}")
         except urllib.error.URLError as exc:
             die(f"Can't reach Coolify at {self.url}: {exc.reason}")
-        return json.loads(raw) if raw else None
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            die(f"Coolify {method} {path} didn't return JSON. Is {self.url} the Coolify server's address?")
 
     def envs(self, app: CoolifyApp) -> tuple[list[dict], dict[str, dict]]:
         """The app's production env vars, plus its preview-deployment ones by key (synced never, pruned along)."""
@@ -671,13 +739,21 @@ def prompt_token(cfg: Config, reason: str) -> str:
     return token
 
 
-def coolify_session(cfg: Config, args: argparse.Namespace) -> tuple[CoolifyClient, dict]:
-    """A working client plus the (possibly just created) item; prompts for and stores the token as needed."""
+def coolify_session(
+    cfg: Config, args: argparse.Namespace, apps: list[CoolifyApp]
+) -> tuple[CoolifyClient, dict, list[tuple[list[dict], dict[str, dict]]]]:
+    """A working client, the (possibly just created) item, and each app's envs; prompts for and stores the token."""
     item = get_item(cfg)
-    token = remote_values(item).get((TOKEN_SECTION, TOKEN_FIELD))
+    stored = remote_values(item)
+    token, token_url = stored.get((TOKEN_SECTION, TOKEN_FIELD)), stored.get((TOKEN_SECTION, URL_FIELD))
     reason = "No Coolify API token in 1Password yet."
     if args.action == "token":
         token, reason = None, "Enter a new Coolify API token."
+    elif token and token_url and token_url != cfg.coolify.url:
+        die(
+            f"The Coolify token in {cfg.item!r} is for {token_url}, but {CONFIG_NAME} says {cfg.coolify.url}."
+            " If the server moved, run `op-env-sync coolify token` to store a token for the new address."
+        )
     prompts = 0
     while True:
         if not token:
@@ -687,14 +763,14 @@ def coolify_session(cfg: Config, args: argparse.Namespace) -> tuple[CoolifyClien
             prompts += 1
         client = CoolifyClient(cfg.coolify.url, token)
         try:
-            client.envs(cfg.coolify.apps[0])
+            envs = [client.envs(app) for app in apps]
         except TokenRejected as exc:
             reason, token = str(exc), None
             continue
-        if token != remote_values(item).get((TOKEN_SECTION, TOKEN_FIELD)):
+        if (token, cfg.coolify.url) != (stored.get((TOKEN_SECTION, TOKEN_FIELD)), token_url):
             save_token(cfg, item, token, args)
             item = get_item(cfg)
-        return client, item
+        return client, item, envs
 
 
 def save_token(cfg: Config, item: dict | None, token: str, args: argparse.Namespace) -> None:
@@ -702,7 +778,7 @@ def save_token(cfg: Config, item: dict | None, token: str, args: argparse.Namesp
         print(f"No item yet; storing the token creates it in {describe_target(cfg)}.")
         if not confirm("Create it?", args.yes):
             raise SystemExit(1)
-    apply_to_item(cfg, item, [(TOKEN_SECTION, TOKEN_FIELD, token)])
+    apply_to_item(cfg, item, [(TOKEN_SECTION, TOKEN_FIELD, token), (TOKEN_SECTION, URL_FIELD, cfg.coolify.url)])
     print(f"Saved the Coolify token in {cfg.item!r} (section {TOKEN_SECTION!r}).")
 
 
@@ -715,14 +791,10 @@ class AppState:
     previews: dict[str, dict] = field(default_factory=dict)  # key -> preview-deployment copy
 
 
-def app_states(cfg: Config, client: CoolifyClient, item: dict, only: str | None) -> list[AppState]:
-    apps = [a for a in cfg.coolify.apps if only in (None, a.name)]
-    if not apps:
-        die(f"No [coolify.{only}] in {CONFIG_NAME}. Apps: {', '.join(a.name for a in cfg.coolify.apps)}")
+def app_states(item: dict, apps: list[CoolifyApp], fetched: list[tuple[list[dict], dict[str, dict]]]) -> list[AppState]:
     remote = remote_values(item)
     states = []
-    for app in apps:
-        envs, previews = client.envs(app)
+    for app, (envs, previews) in zip(apps, fetched, strict=True):
         states.append(
             AppState(
                 app,
@@ -746,18 +818,34 @@ def cmd_coolify(cfg: Config, args: argparse.Namespace) -> int:
             '    [coolify]\n    url = "https://coolify.example.com"\n\n'
             '    [coolify.my-app]\n    uuid = "<the app\'s uuid from its Coolify URL>"'
         )
-    client, item = coolify_session(cfg, args)
+    apps = [a for a in cfg.coolify.apps if args.app in (None, a.name)]
+    if not apps:
+        die(f"No [coolify.{args.app}] in {CONFIG_NAME}. Apps: {', '.join(a.name for a in cfg.coolify.apps)}")
+    if plaintext_risk(cfg.coolify.url):
+        print(f"op-env-sync: warning: {cfg.coolify.url} sends the API token and values unencrypted.", file=sys.stderr)
+    client, item, fetched = coolify_session(cfg, args, apps)
     if args.action == "token":
         return 0
-    states = app_states(cfg, client, item, args.app)
+    states = app_states(item, apps, fetched)
     return {"status": coolify_status, "pull": coolify_pull, "push": coolify_push}[args.action](
         cfg, args, client, item, states
     )
 
 
-def coolify_status(cfg: Config, _args, _client, _item, states: list[AppState]) -> int:
+def plaintext_risk(url: str) -> bool:
+    """Plain http to anything but a loopback or private-network address."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "https":
+        return False
+    try:
+        return not ipaddress.ip_address(parts.hostname).is_private
+    except ValueError:
+        return parts.hostname != "localhost"
+
+
+def coolify_status(cfg: Config, _args, _client, item, states: list[AppState]) -> int:
     print(f"Coolify:   {cfg.coolify.url}")
-    print(f"1Password: {describe_target(cfg)}")
+    print(f"1Password: {describe_target(cfg, item)}")
     for st in states:
         print(f"\n{st.app.name} ({st.app.uuid})  <->  section {st.app.section!r}")
         keys = sorted(set(st.live) | set(st.stored) | set(st.hidden))
@@ -829,8 +917,7 @@ def coolify_push(cfg: Config, args, client: CoolifyClient, _item, states: list[A
     for st, action, key in plan:
         twin = " (and its preview copy)" if action == "delete" and key in st.previews else ""
         print(f"  {symbol[action]} {st.app.name}/{key}{twin}")
-    risky = sum(action != "create" for _, action, _ in plan)
-    if risky and not confirm(f"Change {risky} existing value(s) in Coolify?", args.yes):
+    if not confirm(f"Apply {len(plan)} change(s) to Coolify at {cfg.coolify.url}?", args.yes):
         return 1
     for st, action, key in plan:
         if action == "create":

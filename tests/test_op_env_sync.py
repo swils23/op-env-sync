@@ -271,3 +271,112 @@ def test_write_keeps_existing_permissions(tmp_path):
     env.set("A", "2")
     env.write(path)
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+@pytest.mark.parametrize(
+    ("text", "values"),
+    [
+        ('A="line1\nline2"\nB=1\n', {"A": "line1\nline2", "B": "1"}),
+        ("A='line1\nline2'\nB=1\n", {"A": "line1\nline2", "B": "1"}),
+        ('K="-----BEGIN-----\nQUJDREVGR0hJSktMTU5PUA=="\n', {"K": "-----BEGIN-----\nQUJDREVGR0hJSktMTU5PUA=="}),
+        ('A="a\\qb"\n', {"A": "a\\qb"}),
+        ('A="a\\$b"\n', {"A": "a\\$b"}),
+        ('A="a\\\\b"\n', {"A": "a\\b"}),
+        ("A=x\r\nB=y\r\n", {"A": "x", "B": "y"}),
+    ],
+)
+def test_decode_whole_file(tmp_path, text, values):
+    path = tmp_path / ".env"
+    path.write_text(text)
+    assert op_env_sync.EnvFile.read(path).values == values
+
+
+def test_set_replaces_a_whole_multiline_value(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text('# head\nA="old1\nold2"  # keep\nB=1\n')
+    env = op_env_sync.EnvFile.read(path)
+    env.set("A", "new")
+    env.set("B", "2")
+    env.write(path)
+    assert path.read_text() == '# head\nA="new"  # keep\nB=2\n'
+
+
+def test_write_goes_through_a_symlink(tmp_path):
+    real = tmp_path / "real.env"
+    real.write_text("A=1\n")
+    link = tmp_path / ".env"
+    link.symlink_to(real)
+    env = op_env_sync.EnvFile.read(link)
+    env.set("A", "2")
+    env.write(link)
+    assert link.is_symlink()
+    assert real.read_text() == "A=2\n"
+
+
+def test_pull_refuses_a_symlink_out_of_the_project(pushed, project, run, tmp_path):
+    outside = tmp_path / "rc"
+    outside.write_text("# rc\n")
+    path = project("linked", CONFIG)
+    (path / ".env").symlink_to(outside)
+    code, _, err = run("pull", "--yes")
+    assert code == 2
+    assert "outside the project" in err
+    assert outside.read_text() == "# rc\n"
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ('[variables]\n"X=1\\ncurl x | sh\\n#" = {}\n', "isn't a valid variable name"),
+        ("[variables]\nMY-VAR = {}\n", "isn't a valid variable name"),
+        ('[variables]\nX = { file = "../../.zshrc" }\n', "inside the project"),
+        ('[variables]\nX = { file = "/etc/profile" }\n', "inside the project"),
+        ('[variables]\nX = { file = "" }\n', "inside the project"),
+        ('[variables]\nX = "y"\n', "takes a table"),
+    ],
+)
+def test_bad_variables(project, run, config, message):
+    project(config=config)
+    code, _, err = run("status")
+    assert code == 2
+    assert message in err
+
+
+def test_equivalent_file_paths_are_one_file(fake_op, machine, project, run):
+    config = (
+        '[variables]\nA = { default = "1" }\nB = { default = "2", file = "./.env" }\n'
+        'C = { default = "3", file = "sub/../.env" }\n'
+    )
+    path = project(config=config)
+    op_env_sync.apply_to_item(op_env_sync.load_config(path / ".env.op.toml"), None, [("shared", "Z", "z")])
+    assert run("pull")[0] == 0
+    assert (path / ".env").read_text() == "A=1\nB=2\nC=3\n"
+
+
+def test_similar_names_get_distinct_field_ids(fake_op, machine, project, run):
+    config = "[variables]\nAPI_TOKEN = {}\nAPI__TOKEN = {}\nFoo = {}\nFOO = {}\n"
+    project(config=config, files={".env": "API_TOKEN=1\nAPI__TOKEN=2\nFoo=3\nFOO=4\n"})
+    assert run("push", "--yes")[0] == 0
+    fields = [f for f in fake_op.item("proj .env")["fields"] if f.get("section")]
+    assert len({f["id"] for f in fields}) == 4
+    assert fake_op.values("proj .env") == {
+        ("shared", "API_TOKEN"): "1",
+        ("shared", "API__TOKEN"): "2",
+        ("shared", "Foo"): "3",
+        ("shared", "FOO"): "4",
+    }
+
+
+def test_status_names_the_vault_the_item_was_found_in(fake_op, machine, project, run):
+    project(config=CONFIG, files={".env": ENV, ".env.local-llm": LLM})
+    assert run("push", "--yes", "--vault", "Shared")[0] == 0
+    code, out, _ = run("status")  # no vault pinned: op finds the item wherever it is
+    assert code == 0
+    assert "/ Shared / 'proj .env'" in out
+    assert "default vault" not in out
+
+
+def test_init_escapes_toml_strings(fake_op, project, run):
+    path = project(files={".env": "A=1\n"})
+    assert run("init", "--vault", 'My "Dev" \\ vault')[0] == 0
+    assert op_env_sync.load_config(path / ".env.op.toml").vault == 'My "Dev" \\ vault'

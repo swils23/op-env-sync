@@ -41,6 +41,7 @@ class FakeCoolify:
         self.apps: dict[str, list[dict]] = {}
         self.deploys: list[str] = []
         self.requests: list[tuple[str, str]] = []
+        self.raw: tuple[int, dict[str, str], bytes] | None = None  # answer every request with this instead
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
@@ -69,6 +70,13 @@ class FakeCoolify:
             def handle_any(self, method: str) -> None:
                 url = urlparse(self.path)
                 fake.requests.append((method, url.path))
+                if fake.raw:
+                    code, headers, data = fake.raw
+                    self.send_response(code)
+                    for name, value in {**headers, "Content-Length": str(len(data))}.items():
+                        self.send_header(name, value)
+                    self.end_headers()
+                    return self.wfile.write(data)
                 token = self.headers.get("Authorization", "").removeprefix("Bearer ")
                 abilities = fake.tokens.get(token)
                 if abilities is None:

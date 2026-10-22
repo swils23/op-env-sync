@@ -3,7 +3,8 @@
 
 Items live as JSON files under $FAKE_OP_DIR, one per (account, vault, title), so
 tests can check which account and vault a command touched. Every call is
-appended to calls.log. With FAKE_OP_MULTI set, a call without --account fails
+appended to calls.log. Like op, `item get` without --vault looks in every vault.
+With FAKE_OP_MULTI set, a call without --account fails
 the way op does when several accounts are signed in.
 """
 
@@ -29,7 +30,7 @@ def flag(name: str, default: str | None = None) -> str | None:
 
 
 account = flag("--account")
-vault = flag("--vault", "Private")
+vault = flag("--vault")
 fmt = flag("--format")
 if account is None:
     if os.environ.get("FAKE_OP_MULTI"):
@@ -38,7 +39,13 @@ if account is None:
 
 
 def path(title: str) -> Path:
-    return root / f"{account}__{vault}__{title}.json"
+    if vault is None:
+        found = sorted(root.glob(f"{account}__*__{title}.json"))
+        if len(found) > 1:
+            sys.exit(f'[ERROR] More than one item matches "{title}".')
+        if found:
+            return found[0]
+    return root / f"{account}__{vault or 'Private'}__{title}.json"
 
 
 if args[:1] == ["whoami"]:
@@ -50,6 +57,7 @@ elif args[:2] == ["item", "get"]:
 elif args[:3] == ["item", "create", "-"]:
     item = json.load(sys.stdin)
     item["id"] = uuid.uuid4().hex
+    item["vault"] = {"id": uuid.uuid4().hex, "name": vault or "Private"}
     path(item["title"]).write_text(json.dumps(item))
     print(json.dumps(item))
 elif args[:2] == ["item", "edit"]:

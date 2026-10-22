@@ -89,6 +89,10 @@ def test_coolify_flags_are_rejected_elsewhere(fake_op, project, run):
         ('[coolify]\nurl = "http://c"\n', "lists no apps"),
         ('[coolify]\nurl = "http://c"\n[coolify.web]\nsection = "x"\n', "needs the app's `uuid`"),
         ('[coolify]\nurl = "http://c"\ntoken = "abc"\n', "'token' is neither"),
+        ('[coolify]\nurl = "file:///etc"\n[coolify.web]\nuuid = "x"\n', "an http(s) address"),
+        ('[coolify]\nurl = "http://c"\n[coolify.web]\nuuid = "x"\nsection = "shared"\n', "is reserved"),
+        ('[coolify]\nurl = "http://c"\n[coolify.web]\nuuid = "x"\nsection = "host-pc"\n', "is reserved"),
+        ('[coolify]\nurl = "http://c"\n[coolify.web]\nuuid = "x"\nsection = "coolify"\n', "is reserved"),
     ],
 )
 def test_config_errors(project, run, table, message):
@@ -108,7 +112,7 @@ def test_token_is_prompted_for_and_stored_in_the_item(apps, fake_op, project, ru
     assert code == 0
     assert len(asked) == 1
     assert "No Coolify API token in 1Password yet." in out
-    assert section(fake_op, "coolify") == {"api-token": "good-token"}
+    assert section(fake_op, "coolify") == {"api-token": "good-token", "url": apps.url}
     assert "good-token" not in out
 
     terminal(tokens=[])  # a second run reads it from 1Password: no prompt
@@ -131,7 +135,7 @@ def test_rejected_token_is_replaced(ready, fake_op, run, terminal):
     assert code == 0
     assert "Coolify rejected the API token." in out
     assert len(asked) == 1
-    assert section(fake_op, "coolify") == {"api-token": "rotated"}
+    assert section(fake_op, "coolify") == {"api-token": "rotated", "url": ready.url}
 
 
 def test_token_that_cannot_read_values_is_refused(apps, fake_op, project, run, terminal):
@@ -141,7 +145,7 @@ def test_token_that_cannot_read_values_is_refused(apps, fake_op, project, run, t
     code, out, err = run("coolify")
     assert code == 0, (out, err)
     assert "lacks the read:sensitive ability" in out
-    assert section(fake_op, "coolify") == {"api-token": "good-token"}
+    assert section(fake_op, "coolify") == {"api-token": "good-token", "url": apps.url}
 
 
 def test_three_bad_tokens_give_up(apps, fake_op, project, run, terminal):
@@ -259,15 +263,18 @@ def test_push_updates_values_and_keeps_coolify_flags(ready, fake_op, run, monkey
     assert preview["value"] == "preview-only"
 
 
-def test_push_creates_missing_keys_without_asking(ready, fake_op, run):
+def test_push_asks_before_creating_keys(ready, fake_op, run):
     run("coolify", "pull")
     import op_env_sync
 
     cfg = op_env_sync.load_config(op_env_sync.find_config(op_env_sync.Path.cwd()))
     op_env_sync.apply_to_item(cfg, op_env_sync.get_item(cfg), [("coolify-worker", "EMAIL_URL", "smtp://x")])
-    code, out, _ = run("coolify", "push")
-    assert code == 0
+    code, out, err = run("coolify", "push")
+    assert code == 1
     assert "+ worker/EMAIL_URL" in out
+    assert f"Apply 1 change(s) to Coolify at {ready.url}?" in err
+    assert "EMAIL_URL" not in ready.values(WORKER)
+    assert run("coolify", "push", "--yes")[0] == 0
     assert ready.values(WORKER)["EMAIL_URL"] == "smtp://x"
     assert ready.get(WORKER, "EMAIL_URL")["is_runtime"] is True
 
@@ -296,13 +303,13 @@ def test_push_redeploys_only_when_asked(ready, fake_op, run):
 
     cfg = op_env_sync.load_config(op_env_sync.find_config(op_env_sync.Path.cwd()))
     op_env_sync.apply_to_item(cfg, op_env_sync.get_item(cfg), [("coolify-worker", "NEW", "1")])
-    code, out, _ = run("coolify", "push")
+    code, out, _ = run("coolify", "push", "--yes")
     assert code == 0
     assert "on the next deploy of worker (or use --redeploy)" in out
     assert ready.deploys == []
 
     op_env_sync.apply_to_item(cfg, op_env_sync.get_item(cfg), [("coolify-worker", "NEW2", "2")])
-    code, out, _ = run("coolify", "push", "--redeploy")
+    code, out, _ = run("coolify", "push", "--redeploy", "--yes")
     assert code == 0
     assert ready.deploys == [WORKER]
     assert "Redeploying worker." in out
@@ -315,7 +322,7 @@ def test_push_without_write_ability_explains(ready, fake_op, run):
 
     cfg = op_env_sync.load_config(op_env_sync.find_config(op_env_sync.Path.cwd()))
     op_env_sync.apply_to_item(cfg, op_env_sync.get_item(cfg), [("coolify-worker", "NEW", "1")])
-    code, _, err = run("coolify", "push")
+    code, _, err = run("coolify", "push", "--yes")
     assert code == 2
     assert "Coolify refused POST" in err
     assert "write" in err
@@ -335,7 +342,7 @@ def test_created_keys_get_a_preview_copy_that_prune_removes_too(ready, fake_op, 
 
     cfg = op_env_sync.load_config(op_env_sync.find_config(op_env_sync.Path.cwd()))
     op_env_sync.apply_to_item(cfg, op_env_sync.get_item(cfg), [("coolify-worker", "TEMP", "1")])
-    assert run("coolify", "push", "--app", "worker")[0] == 0
+    assert run("coolify", "push", "--app", "worker", "--yes")[0] == 0
     assert [e["is_preview"] for e in ready.apps[WORKER] if e["key"] == "TEMP"] == [False, True]
 
     op_env_sync.apply_to_item(cfg, op_env_sync.get_item(cfg), [], [("coolify-worker", "TEMP")])
@@ -351,3 +358,86 @@ def test_preview_only_keys_are_never_touched(ready, fake_op, run):
     assert "PREVIEW_ONLY" not in section(fake_op, "coolify-worker")
     assert run("coolify", "push", "--app", "worker", "--prune", "--yes")[0] == 0
     assert any(e["key"] == "PREVIEW_ONLY" for e in ready.apps[WORKER])
+
+
+# --- where the token may go ---
+
+
+def test_stored_token_is_never_sent_to_another_url(ready, fake_op, project, run, coolify):
+    import op_env_sync
+
+    path = op_env_sync.find_config(op_env_sync.Path.cwd())
+    path.write_text(path.read_text().replace(ready.url, "http://127.0.0.1:9"))
+    sent = len(ready.requests)
+    code, _, err = run("coolify", "push", "--yes")
+    assert code == 2
+    assert f"is for {ready.url}" in err
+    assert "op-env-sync coolify token" in err
+    assert len(ready.requests) == sent
+
+
+def test_token_command_rebinds_the_token_to_a_new_url(ready, fake_op, run, terminal):
+    import op_env_sync
+
+    path = op_env_sync.find_config(op_env_sync.Path.cwd())
+    path.write_text(path.read_text().replace(ready.url, ready.url.replace("127.0.0.1", "localhost")))
+    terminal(tokens=["good-token"])
+    assert run("coolify", "token", "--yes")[0] == 0
+    assert section(fake_op, "coolify")["url"] == ready.url.replace("127.0.0.1", "localhost")
+
+
+def test_a_token_stored_without_a_url_is_bound_on_first_use(apps, fake_op, project, run):
+    import op_env_sync
+
+    path = project(config=config(apps.url))
+    cfg = op_env_sync.load_config(path / ".env.op.toml")
+    op_env_sync.apply_to_item(cfg, None, [("coolify", "api-token", "good-token")])
+    assert run("coolify")[0] == 0
+    assert section(fake_op, "coolify") == {"api-token": "good-token", "url": apps.url}
+
+
+def test_redirects_are_not_followed(ready, fake_op, run):
+    ready.raw = (302, {"Location": "http://127.0.0.1:9/api/v1/x"}, b"")
+    code, _, err = run("coolify")
+    assert code == 2
+    assert "redirected" in err
+    assert "http://127.0.0.1:9/api/v1/x" in err
+
+
+def test_a_non_json_answer_explains(ready, fake_op, run):
+    ready.raw = (200, {"Content-Type": "text/html"}, b"<html>Sign in</html>")
+    code, _, err = run("coolify")
+    assert code == 2
+    assert "didn't return JSON" in err
+
+
+def test_plain_http_to_a_public_host_warns(fake_op, project, run):
+    project(config=config("http://coolify.example.com"))
+    _, _, err = run("coolify")
+    assert "sends the API token and values unencrypted" in err
+
+
+def test_plain_http_on_a_private_network_is_quiet(apps, fake_op, project, run):
+    project(config=config(apps.url))
+    _, _, err = run("coolify")
+    assert "unencrypted" not in err
+
+
+# --- the token is checked against the apps being synced ---
+
+
+def test_app_filter_does_not_need_the_first_app(ready, fake_op, run):
+    del ready.apps[WEB]
+    code, _, err = run("coolify", "pull", "--app", "worker", "--yes")
+    assert code == 0, err
+
+
+def test_token_without_read_sensitive_is_refused_even_if_the_first_app_is_empty(apps, fake_op, project, run, terminal):
+    apps.apps[WEB] = []
+    apps.tokens["no-sensitive"] = {"read", "write"}
+    project(config=config(apps.url))
+    terminal(answers="y\n", tokens=["no-sensitive", "good-token"])
+    code, out, err = run("coolify")
+    assert code == 0, (out, err)
+    assert "lacks the read:sensitive ability" in out
+    assert section(fake_op, "coolify")["api-token"] == "good-token"

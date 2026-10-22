@@ -64,7 +64,7 @@ Commit it. It holds layout only, never values. op-env-sync looks for it in the c
 | Key | Meaning |
 |---|---|
 | `scope` | `shared` (default), `platform`, `host`, or `local` |
-| `file` | The env file this variable lives in. Default `.env`. One item can hold several files. |
+| `file` | The env file this variable lives in, relative to the project. Default `.env`. One item can hold several files. |
 | `default` | Written by `pull` when the variable is missing locally and has no value in 1Password |
 | `help_text` | Written as a comment above the variable when `pull` adds it |
 
@@ -81,7 +81,7 @@ All of a project's values live in one Secure Note, with one section per scope:
 | `host` | `host-<hostname>` | Per-machine settings |
 | `local` | — | Values that never leave the machine |
 
-A machine only reads and writes `shared` plus its own platform and host sections. Each section holds concealed fields named after the variables, so you can also read them elsewhere with a secret reference like `op://Private/swils .env/shared/SECRET_KEY`.
+A machine only reads and writes `shared` plus its own platform and host sections. Without a pinned `vault`, `op` looks for the item in every vault you can see; `status`, `push` and `pull` print the vault it was found in. Each section holds concealed fields named after the variables, so you can also read them elsewhere with a secret reference like `op://Private/swils .env/shared/SECRET_KEY`.
 
 ## Several 1Password accounts
 
@@ -98,7 +98,7 @@ Use the account's sign-in address (`my.1password.com`, `acme.1password.com`) rat
 There is no merge base and no background sync. `status` shows what differs, and you choose a direction:
 
 - **push** copies every tracked local value that differs into its section of the item. Keys that are in `.env` but not in `.env.op.toml` are reported and skipped.
-- **pull** copies every value from this machine's sections into the right env file. It changes the value in place and keeps comments, ordering, `export` prefixes and quote style. New files are created with owner-only permissions (`0600`).
+- **pull** copies every value from this machine's sections into the right env file. It changes the value in place and keeps comments, ordering, `export` prefixes and quote style. New files are created with owner-only permissions (`0600`). A symlinked env file is written through, as long as it points inside the project.
 
 1Password keeps every version of the item, so an overwritten value can be recovered from its item history. Your local `.env` has no such history, which is why `pull` asks first.
 
@@ -115,7 +115,7 @@ uuid = "b8c0go000s0kgk8wcw0c0k80"   # the id in the app's Coolify URL
 
 [coolify.worker]
 uuid = "jsowo44owwc0gs0scssck80k"
-section = "prod-worker"             # optional: a different section name
+section = "prod-worker"             # optional: a different section name (not shared, local, coolify, a platform or host-*)
 ```
 
 ```bash
@@ -127,11 +127,11 @@ op-env-sync coolify token     # store a new API token
 
 Values go straight from one API to the other. They are never written to disk or printed.
 
-**The API token.** The first `coolify` command prompts for a token, with hidden input, and stores it in the item's `coolify` section, so each machine only ever reads it from 1Password. Create the token in Coolify under *Keys & Tokens → API tokens* with the `read`, `write` and `read:sensitive` abilities. Coolify only returns values to tokens with `read:sensitive`. Add `deploy` too if you'll use `--redeploy`. If Coolify rejects a stored token, you're prompted for a replacement, and `coolify token` changes it whenever you like.
+**The API token.** The first `coolify` command prompts for a token, with hidden input, and stores it in the item's `coolify` section, so each machine only ever reads it from 1Password. Create the token in Coolify under *Keys & Tokens → API tokens* with the `read`, `write` and `read:sensitive` abilities. Coolify only returns values to tokens with `read:sensitive`. Add `deploy` too if you'll use `--redeploy`. The token is stored with the `url` it was entered for and is never sent anywhere else: if `url` changes, run `coolify token` to store one for the new address. If Coolify rejects a stored token, you're prompted for a replacement, and `coolify token` changes it whenever you like. Redirects aren't followed, and a plain-`http` url outside your private network gets a warning.
 
 **What syncs.** Each app's production variables. Variables for preview deployments are left alone. Coolify never returns the value of a variable marked "shown once", so those are listed but never synced.
 
-**push** creates missing variables (Coolify's defaults: available at build time and runtime) and updates changed ones. An update keeps each variable's Coolify settings (literal, multiline, build-time, runtime) as they are. Changing an existing value asks first. Coolify applies new values on an app's next deploy; pass `--redeploy` to deploy the changed apps right away. `push` skips an app whose 1Password section is empty, so an app is never emptied by accident; run `coolify pull` first.
+**push** creates missing variables (Coolify's defaults: available at build time and runtime) and updates changed ones. An update keeps each variable's Coolify settings (literal, multiline, build-time, runtime) as they are. Every push asks first, naming the server. Coolify applies new values on an app's next deploy; pass `--redeploy` to deploy the changed apps right away. `push` skips an app whose 1Password section is empty, so an app is never emptied by accident; run `coolify pull` first.
 
 **Deleting.** Neither direction deletes anything by default. `--prune` also removes keys the source side doesn't have: `pull --prune` deletes fields from 1Password, and `push --prune` deletes variables in Coolify. Coolify gives every new variable a preview-deployment copy (the same happens when you add one in its UI), so `push --prune` deletes a key's preview copy along with it. `--app NAME` limits any command to one app.
 
