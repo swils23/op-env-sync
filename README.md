@@ -102,6 +102,39 @@ There is no merge base and no background sync. `status` shows what differs, and 
 
 1Password keeps every version of the item, so an overwritten value can be recovered from its item history. Your local `.env` has no such history, which is why `pull` asks first.
 
+## Coolify (optional)
+
+If you deploy with [Coolify](https://coolify.io), the same 1Password item can also hold each app's environment variables, one section per app, kept in sync in both directions. Nothing here applies to a project whose `.env.op.toml` has no `[coolify]` table: the other commands never contact Coolify or ask for a token.
+
+```toml
+[coolify]
+url = "https://coolify.example.com"
+
+[coolify.web]                       # 1Password section "coolify-web"
+uuid = "b8c0go000s0kgk8wcw0c0k80"   # the id in the app's Coolify URL
+
+[coolify.worker]
+uuid = "jsowo44owwc0gs0scssck80k"
+section = "prod-worker"             # optional: a different section name
+```
+
+```bash
+op-env-sync coolify           # status: compare each app with its section (key names only)
+op-env-sync coolify pull      # Coolify -> 1Password
+op-env-sync coolify push      # 1Password -> Coolify
+op-env-sync coolify token     # store a new API token
+```
+
+Values go straight from one API to the other. They are never written to disk or printed.
+
+**The API token.** The first `coolify` command prompts for a token, with hidden input, and stores it in the item's `coolify` section, so each machine only ever reads it from 1Password. Create the token in Coolify under *Keys & Tokens → API tokens* with the `read`, `write` and `read:sensitive` abilities. Coolify only returns values to tokens with `read:sensitive`. Add `deploy` too if you'll use `--redeploy`. If Coolify rejects a stored token, you're prompted for a replacement, and `coolify token` changes it whenever you like.
+
+**What syncs.** Each app's production variables. Variables for preview deployments are left alone. Coolify never returns the value of a variable marked "shown once", so those are listed but never synced.
+
+**push** creates missing variables (Coolify's defaults: available at build time and runtime) and updates changed ones. An update keeps each variable's Coolify settings (literal, multiline, build-time, runtime) as they are. Changing an existing value asks first. Coolify applies new values on an app's next deploy; pass `--redeploy` to deploy the changed apps right away. `push` skips an app whose 1Password section is empty, so an app is never emptied by accident; run `coolify pull` first.
+
+**Deleting.** Neither direction deletes anything by default. `--prune` also removes keys the source side doesn't have: `pull --prune` deletes fields from 1Password, and `push --prune` deletes variables in Coolify. `--app NAME` limits any command to one app.
+
 ## Development
 
 ```bash

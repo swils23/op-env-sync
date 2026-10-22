@@ -47,7 +47,7 @@ only-include = ["op_env_sync.py"]
 only-include = ["op_env_sync.py", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "tests"]
 testpaths = ["tests"]
 filterwarnings = ["error"]
 
@@ -56,6 +56,6 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "SIM", "UP", "I", "S"]
-# S603/S607: op-env-sync's job is running `op`; S101: pytest asserts.
+# S603/S607: op-env-sync's job is running `op`. Tests: S101 asserts, S105/S106 fake secrets.
 ignore = ["S603", "S607"]
-per-file-ignores = { "tests/*" = ["S101"] }
+per-file-ignores = { "tests/*" = ["S101", "S105", "S106"] }

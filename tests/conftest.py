@@ -1,3 +1,4 @@
+import io
 import json
 import sys
 from pathlib import Path
@@ -82,3 +83,40 @@ def run(capsys):
         return code, out, err
 
     return run_cli
+
+
+@pytest.fixture
+def coolify():
+    from fake_coolify import FakeCoolify
+
+    fake = FakeCoolify()
+    fake.thread.start()
+    yield fake
+    fake.server.shutdown()
+    fake.server.server_close()
+
+
+class TTYInput(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+@pytest.fixture
+def terminal(monkeypatch):
+    """Pretend stdin is a terminal: terminal(answers="y\\n", tokens=["t1", ...]) feeds input() and getpass()."""
+
+    def use(answers: str = "", tokens: list[str] | None = None) -> list[str]:
+        monkeypatch.setattr(sys, "stdin", TTYInput(answers))
+        asked: list[str] = []
+        queue = list(tokens or [])
+
+        def fake_getpass(prompt: str = "") -> str:
+            asked.append(prompt)
+            if not queue:
+                raise AssertionError(f"unexpected token prompt: {prompt}")
+            return queue.pop(0)
+
+        monkeypatch.setattr(op_env_sync.getpass, "getpass", fake_getpass)
+        return asked
+
+    return use
